@@ -1,6 +1,13 @@
 # Websocket 連線
 
-讓你的 Minecraft 可以接收外部資料。接口都寫好了，裡面有寫範例的外部傳送與內部接收方法，兩筆資料分別為 `myLargeData`、`anotherChannel`，可以參考一下外部傳送 `./websocket/py/main.py`、`./websocket/js/index.js` 與內部接收 `./scripts/src/index.ts` 的方式。
+讓你的 Minecraft 可以接收外部資料。接口都寫好了，裡面有寫範例的外部傳送與內部接收方法，兩筆資料分別為 `myLargeData`、`anotherChannel`，可以參考一下外部傳送 `./websocket/py/main.py`、`./websocket/js/index.js` 與內部接收 `./scripts/src/index.ts` 的方式。（todo: example code here）
+
+
+把 websocket 開起來後到遊戲輸入你的 port 就能連上了，記得要設定要打開【設定 > 一般 > 已啟用 Websockets】
+```
+/wsserver localhost:5218
+/connect localhost:5218 // 也行
+```
 
 ### 從 Minecraft 傳送資料到外部
 
