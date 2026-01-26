@@ -1,0 +1,41 @@
+{
+    "format_version": 2,
+    "header": {
+        "description": "byTWc",
+        "name": "Websocket 教學",
+        "uuid": "5eb5007e-67a5-4e2c-8085-774e706c04fc",
+        "version": [
+            8,
+            7,
+            6
+        ],
+        "min_engine_version": [
+            1,
+            19,
+            60
+        ]
+    },
+    "modules": [
+        {
+            "uuid": "92292af8-dbd9-4526-816d-716780f46b49",
+            "version": [
+                1,
+                0,
+                0
+            ],
+            "type": "script",
+            "language": "javascript",
+            "entry": "scripts/dist/index.js"
+        }
+    ],
+    "dependencies": [
+        {
+            "module_name": "@minecraft/server",
+            "version": "2.4.0"
+        },
+        {
+            "module_name": "@minecraft/server-ui",
+            "version": "2.0.0"
+        }
+    ]
+}
