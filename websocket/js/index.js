@@ -1,15 +1,14 @@
-import { MinecraftWebSocketServer } from "./MinecraftWebSocketServer.js";
+import { MinecraftEvents, MinecraftWebSocketServer } from "./MinecraftWebSocketServer.js";
 
 async function main() {
-    const wsServer = new MinecraftWebSocketServer(5218)
-
-    wsServer.on('log', (message) => console.log(`[WSS] ${message}`));
-    // 監聽玩家聊天訊息
-    wsServer.on('playerMessage', (sender, msg, body) => {
-        console.log(`[Chat] <${sender}> ${msg}`);
-    });
+    const wsServer = new MinecraftWebSocketServer(5218, true)
 
     await wsServer.start();
+
+    // 監聽玩家聊天訊息
+    wsServer.eventSubscribe(MinecraftEvents.PlayerMessage, (body) => {
+        if (body.type === 'chat') console.log(`[Chat] <${body.sender}> ${body.message}`);
+    });
 
     const responses = await wsServer.runCommand('say Hello from Javascript!');
     console.log("指令執行結果:", responses);

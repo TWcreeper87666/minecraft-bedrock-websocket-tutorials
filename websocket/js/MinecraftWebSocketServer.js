@@ -1,53 +1,75 @@
 import { createServer } from "nodejs-websocket";
 import EventEmitter from "events";
 const WSS_MAXIMUM_BYTES = 661;
+const MC_PROTOCOL_VERSION = 26; // 支援新版 execute
+
+/**
+ * @enum {string}
+ * @description 可訂閱的 Minecraft WebSocket 事件。
+ * @warning 大多數這些事件在目前版本的 Minecraft 中已不再支援，
+ * 僅保留用於舊版相容性或未來可能重新啟用。
+ * 目前已知可運作的事件非常有限，例如 'PlayerMessage'。
+ */
+export const MinecraftEvents = Object.freeze({
+    AwardAchievement: "AwardAchievement",
+    BlockPlaced: "BlockPlaced",
+    BlockBroken: "BlockBroken",
+    EndOfDay: "EndOfDay",
+    GameRulesLoaded: "GameRulesLoaded",
+    GameRulesUpdated: "GameRulesUpdated",
+    PlayerMessage: "PlayerMessage",
+    PlayerTeleported: "PlayerTeleported",
+    PlayerTravelled: "PlayerTravelled",
+    PlayerTransform: "PlayerTransform",
+    ItemAcquired: "ItemAcquired",
+    ItemCrafted: "ItemCrafted",
+    ItemDropped: "ItemDropped",
+    ItemEquipped: "ItemEquipped",
+    ItemInteracted: "ItemInteracted",
+    ItemNamed: "ItemNamed",
+    ItemSmelted: "ItemSmelted",
+    ItemUsed: "ItemUsed",
+    BookEdited: "BookEdited",
+    SignedBookOpened: "SignedBookOpened",
+    MobBorn: "MobBorn",
+    MobInteracted: "MobInteracted",
+    MobKilled: "MobKilled",
+    StartWorld: "StartWorld",
+    WorldLoaded: "WorldLoaded",
+    WorldGenerated: "WorldGenerated",
+    ScriptLoaded: "ScriptLoaded",
+    ScriptRan: "ScriptRan",
+    ScreenChanged: "ScreenChanged",
+    SlashCommandExecuted: "SlashCommandExecuted",
+    SignInToXboxLive: "SignInToXboxLive",
+    SignOutOfXboxLive: "SignOutOfXboxLive",
+    VehicleExited: "VehicleExited"
+});
 
 export class MinecraftWebSocketServer {
-    #emitter = new EventEmitter();
     #connectionResolver = null;
+    #eventSubscriptionCallbacks = new Map(); // Key: eventName (PascalCase), Value: Set<Function>
 
-    constructor(port) {
+    constructor(port, showLog = false) {
         this.port = port;
+        this.showLog = showLog; // 新增的日誌開關
 
         this.wsServer = null;
         this.clientConn = null;
-
         this.commandBatches = new Map(); // K: batchId, V: { commandCount, results, resolve, reject, timeout }
         this.requestIdToBatchId = new Map(); // K: requestId, V: batchId
         this.requestTimeoutMs = 60_000;
     }
 
     /**
-     * 監聽伺服器事件。
-     * @param {'log' | 'statusUpdate' | 'playerMessage' | 'itemInteracted' | 'blockPlaced' | 'blockBroken' | 'playerTravelled' | 'message'} eventName - 要監聽的事件名稱 (camelCase)。
-     * @param {(...args: any[]) => void} listener - 事件觸發時要執行的回呼函式。
-     * @returns {this}
+     * 內部日誌函式，根據 `showLog` 參數決定是否輸出到 console。
+     * @param {string} message - 要輸出的日誌訊息。
+     * @private
      */
-    on(eventName, listener) {
-        this.#emitter.on(eventName, listener);
-        return this;
-    }
-
-    /**
-     * 監聽一次性的伺服器事件。
-     * @param {'log' | 'statusUpdate' | 'playerMessage' | 'itemInteracted' | 'blockPlaced' | 'blockBroken' | 'playerTravelled' | 'message'} eventName - 要監聽的事件名稱 (camelCase)。
-     * @param {(...args: any[]) => void} listener - 事件觸發時要執行的回呼函式。
-     * @returns {this}
-     */
-    once(eventName, listener) {
-        this.#emitter.once(eventName, listener);
-        return this;
-    }
-
-    /**
-     * 移除指定的事件監聽器。
-     * @param {'log' | 'statusUpdate' | 'playerMessage' | 'itemInteracted' | 'blockPlaced' | 'blockBroken' | 'playerTravelled' | 'message'} eventName - 要移除監聽器的事件名稱 (camelCase)。
-     * @param {(...args: any[]) => void} listener - 先前附加的監聽器函式。
-     * @returns {this}
-     */
-    off(eventName, listener) {
-        this.#emitter.off(eventName, listener);
-        return this;
+    #_log(message) {
+        if (this.showLog) {
+            console.log(`[WSS] ${message}`);
+        }
     }
 
     start() {
@@ -59,12 +81,12 @@ export class MinecraftWebSocketServer {
             this.#connectionResolver = { resolve, reject };
 
             this.wsServer = createServer((conn) => this.#onOpen(conn)).listen(this.port, () => {
-                this.#emitter.emit("log", `✅ WebSocket 伺服器已啟動於端口 ${this.port}`);
-                this.#emitter.emit("statusUpdate", `等待連線中... (/wsserver localhost:${this.port})`);
+                this.#_log(`✅ WebSocket 伺服器已啟動於端口 ${this.port}`);
+                this.#_log(`等待連線中... (/wsserver localhost:${this.port})`);
             });
 
             this.wsServer.on("error", (err) => {
-                this.#onError(null, err);
+                this.#_log(`⚠️ 伺服器錯誤: ${err.message}`);
                 if (this.#connectionResolver) {
                     this.#connectionResolver.reject(err);
                     this.#connectionResolver = null;
@@ -75,7 +97,7 @@ export class MinecraftWebSocketServer {
 
     stop(reason = "已停止") {
         if (this.wsServer) {
-            this.wsServer.close(() => this.#emitter.emit("log", "🛑 WebSocket 伺服器已停止"));
+            this.wsServer.close(() => this.#_log("🛑 WebSocket 伺服器已停止"));
             this.wsServer = null;
         }
 
@@ -84,18 +106,16 @@ export class MinecraftWebSocketServer {
             this.clientConn = null;
         }
 
-        this.#emitter.emit("statusUpdate", reason);
+        this.#_log(reason);
     }
 
     #onOpen(conn) {
-        this.#emitter.emit("log", `🔗 客戶端已連線: ${conn.socket.remoteAddress}`);
-        this.#emitter.emit("statusUpdate", "連線成功");
+        this.#_log(`🔗 客戶端已連線: ${conn.socket.remoteAddress}`);
         this.clientConn = conn;
 
         this.sendMessage("§l§b- WebSocket連接成功!");
-        this.eventSubscribe("PlayerMessage");
 
-        conn.on("text", (msg) => this.#onMessage(conn, msg));
+        conn.on("text", (msg) => this.#onText(conn, msg));
         conn.on("close", (code, reason) => this.#onClose(conn, code, reason));
         conn.on("error", (err) => this.#onError(conn, err));
 
@@ -105,7 +125,7 @@ export class MinecraftWebSocketServer {
         }
     }
 
-    #onMessage(conn, message) {
+    #onText(conn, message) {
         try {
             const data = JSON.parse(message);
             const header = data.header || {};
@@ -113,17 +133,12 @@ export class MinecraftWebSocketServer {
             const eventName = header.eventName;
 
             if (eventName) {
-                const camelCaseEventName = eventName.charAt(0).toLowerCase() + eventName.slice(1);
-
-                // 對聊天訊息進行特殊處理，提供更簡潔的參數
-                if (camelCaseEventName === 'playerMessage' && body.type === 'chat') {
-                    const sender = body.sender;
-                    const msg = body.message;
-                    this.#emitter.emit('playerMessage', sender, msg, body);
-                } else {
-                    // 對於所有其他訂閱的事件，發送原始 body
-                    this.#emitter.emit(camelCaseEventName, body);
+                // 觸發透過 eventSubscribe 註冊的回呼函式
+                const callbacks = this.#eventSubscriptionCallbacks.get(eventName);
+                if (callbacks) {
+                    callbacks.forEach(callback => callback(body, header));
                 }
+                // 不再透過 emitter 發送 Minecraft 遊戲事件
             } else if (header.messagePurpose === "commandResponse") {
                 const requestId = header.requestId;
                 const statusMessage = body.statusMessage || "success";
@@ -141,15 +156,11 @@ export class MinecraftWebSocketServer {
                     }
                 }
             } else {
-                this.#emitter.emit("message", header, body);
+                this.#_log(`[Unhandled Message] Purpose: ${header.messagePurpose}, Event: ${eventName}`);
             }
         } catch (err) {
-            this.#emitter.emit("log", `❌ 解析 JSON 時出錯: ${err.message}`);
+            this.#_log(`❌ 解析 JSON 時出錯: ${err.message}`);
         }
-    }
-
-    playerMessage(sender, message) {
-        this.#emitter.emit("log", `[Chat] <${sender}> ${message}`);
     }
 
     /**
@@ -181,26 +192,79 @@ export class MinecraftWebSocketServer {
             throw new Error("名稱長度不能超過 64 個字元。");
         }
 
-        const dataString = typeof data === 'string' ? data : JSON.stringify(data);
-        const dataB64 = Buffer.from(dataString).toString('base64');
+        const jsonString = JSON.stringify(data);
+        const dataString = jsonString.replace(
+            /[^\x00-\x7F]/g,
+            (c) => `\\u${('0000' + c.charCodeAt(0).toString(16)).slice(-4)}`
+        );
         const transferId = this.#generateId(4);
 
-        // 經過計算的區塊大小，以避免超過指令長度限制。
-        // WebSocket 總酬載限制為 WSS_MAXIMUM_BYTES (661 位元組)。
-        // 酬載結構與指令前綴 (`scriptevent yb:<name> DATA:<index>:<id>:`) 會消耗一部分空間。
-        // CHUNK_SIZE <= 661 - (JSON 包裝開銷) - (指令前綴開銷)
-        // CHUNK_SIZE <= 661 - ~132 - ~(27 + name.length + index.toString().length)
-        // 假設 name 長度上限為 64，index 位數為 7 (支援到 GB 等級的資料)，一個安全的大小約為 400。
-        const CHUNK_SIZE = 400;
+        // 輔助函式，用於計算給定指令的最終 WebSocket 酬載大小。
+        // 我們使用一個範例 requestId，因為實際的 ID 是在 runCommands 內部生成的。
+        // ID 的長度對於準確的大小計算很重要。
+        const sampleRequestId = this.#generateId(); // #generateId() 預設長度為 3
+        const getCommandPayloadSize = (command) => {
+            const payload = {
+                header: {
+                    requestId: sampleRequestId,
+                    messagePurpose: "commandRequest",
+                    version: MC_PROTOCOL_VERSION,
+                },
+                body: {
+                    commandLine: command,
+                    version: MC_PROTOCOL_VERSION,
+                },
+            };
+            return Buffer.byteLength(JSON.stringify(payload), 'utf8');
+        };
+
         const chunks = [];
-        for (let i = 0; i < dataB64.length; i += CHUNK_SIZE) {
-            chunks.push(dataB64.substring(i, i + CHUNK_SIZE));
+        let remainingData = dataString;
+        let chunkIndex = 0;
+        const commandBase = `scriptevent yb:${name}`;
+
+        while (remainingData.length > 0) {
+            const commandPrefix = `${commandBase} DATA:${chunkIndex}:${transferId}:`;
+
+            // 使用二分搜尋法找到適合 WSS_MAXIMUM_BYTES 的最大資料塊
+            let low = 0;
+            let high = remainingData.length;
+            let bestFitIndex = 0;
+
+            while (low <= high) {
+                const mid = Math.floor(low + (high - low) / 2);
+                if (mid === 0) break; // 不能有長度為 0 的資料塊
+
+                const candidateChunk = remainingData.substring(0, mid);
+                const testCommand = commandPrefix + candidateChunk;
+                const currentSize = getCommandPayloadSize(testCommand);
+
+                if (currentSize <= WSS_MAXIMUM_BYTES) {
+                    // 這個大小有效，嘗試更大的資料塊
+                    bestFitIndex = mid;
+                    low = mid + 1;
+                } else {
+                    // 太大了，縮小搜尋範圍
+                    high = mid - 1;
+                }
+            }
+
+            if (bestFitIndex === 0) {
+                // 如果連一個字元都放不下，表示指令本身的開銷就已經超限了
+                const overheadSize = getCommandPayloadSize(commandPrefix);
+                throw new Error(`無法傳送資料：指令開銷太大 (${overheadSize} 位元組)，沒有足夠的空間容納資料。`);
+            }
+
+            const chunk = remainingData.substring(0, bestFitIndex);
+            chunks.push(chunk);
+            remainingData = remainingData.substring(bestFitIndex);
+            chunkIndex++;
         }
+
         const totalChunks = chunks.length;
 
-        this.#emitter.emit("log", `[${transferId}] 準備向 Minecraft [${name}] 傳送資料，共 ${totalChunks} 塊。`);
+        this.#_log(`[${transferId}] 準備向 Minecraft [${name}] 傳送資料，共 ${totalChunks} 塊。`);
 
-        const commandBase = `scriptevent yb:${name}`;
         const commands = [];
 
         // 1. START command
@@ -214,18 +278,17 @@ export class MinecraftWebSocketServer {
         // 3. END command
         commands.push(`${commandBase} END:${transferId}`);
 
-        // Send all commands sequentially. `runCommand` waits for a response, which
-        // naturally throttles the sending rate and ensures commands are processed in order.
+        // 依序傳送所有指令。`runCommand` 會等待回應，這自然地調節了傳送速率並確保指令按順序處理。
         for (const command of commands) {
             try {
-                await this.runCommand(command);
+                await this.runCommand(command); // runCommand already logs
             } catch (e) {
-                this.#emitter.emit("log", `❌ 傳送資料塊失敗 (ID: ${transferId}): ${e.message}. 傳送中止。`);
+                this.#_log(`❌ 傳送資料塊失敗 (ID: ${transferId}): ${e.message}. 傳送中止。`);
                 throw new Error(`資料傳送中止: ${e.message}`);
             }
         }
 
-        this.#emitter.emit("log", `✅ [${transferId}] 已成功向 Minecraft [${name}] 傳送所有資料塊。`);
+        this.#_log(`✅ [${transferId}] 已成功向 Minecraft [${name}] 傳送所有資料塊。`);
     }
 
     /**
@@ -267,15 +330,13 @@ export class MinecraftWebSocketServer {
     #onClose(conn, code, reason) {
         if (!this.wsServer) return;
         if (this.clientConn === conn) {
-            this.clientConn = null;
+            this.clientConn = null; // Clear clientConn only if it's the one that closed
         }
-        this.#emitter.emit("log", `🚫 客戶端已斷線: 程式碼 ${code}, 原因 ${reason}`);
-        this.#emitter.emit("statusUpdate", "已暫停: Minecraft 離線");
+        this.#_log(`🚫 客戶端已斷線: 程式碼 ${code}, 原因 ${reason}`);
     }
 
     #onError(conn, err) {
-        this.#emitter.emit("log", `⚠️ 發生錯誤: ${err}`);
-        this.#emitter.emit("statusUpdate", `已暫停: ${err?.message || "未知錯誤"}`);
+        this.#_log(`⚠️ 連線錯誤: ${err.message}`);
     }
 
     /**
@@ -316,7 +377,7 @@ export class MinecraftWebSocketServer {
      */
     #internalRunCommand(command, requestId = null) {
         if (!this.clientConn || this.clientConn.closed) {
-            this.#emitter.emit("log", `⚠️ 無法執行指令 "${command}"：連線已關閉`);
+            this.#_log(`⚠️ 無法執行指令 "${command}"：連線已關閉`);
             return;
         }
 
@@ -325,55 +386,66 @@ export class MinecraftWebSocketServer {
             header: {
                 requestId: reqId,
                 messagePurpose: "commandRequest",
-                version: 17104896,
+                version: MC_PROTOCOL_VERSION,
             },
             body: {
                 commandLine: command,
-                version: 17104896,
+                version: MC_PROTOCOL_VERSION,
             },
         });
 
         if (Buffer.byteLength(payload, "utf8") > WSS_MAXIMUM_BYTES) {
             this.sendMessage("§c[runCommand] 指令太長無法執行");
-            this.#emitter.emit("log", `⚠️ 傳送的酬載過大 (${payload.length} 位元組)`);
+            this.#_log(`⚠️ 傳送的酬載過大 (${payload.length} 位元組)`);
             return;
         }
 
-        // 為所有指令（無論是單個還是批次）統一記錄日誌，並顯示請求 ID
-        this.#emitter.emit("log", `[${reqId.slice(0, 5)}] 執行中: ${command}`);
+        // 為所有指令（無論是單個還是批次）統一記錄日誌，並顯示請求 ID (前5位)
+        this.#_log(`[${reqId.slice(0, 5)}] 執行中: ${command}`);
         this.clientConn.sendText(payload);
     }
 
     /**
-     * 註冊事件訂閱，並可選擇性地附加一個回呼函式。
-     * @param {'ItemInteracted' | 'BlockPlaced' | 'BlockBroken' | 'PlayerTravelled' | 'PlayerMessage'} eventName - 要訂閱的 Minecraft 事件名稱 (PascalCase)。
-     * @param {(body: object) => void} [callback] - 當事件觸發時要執行的回呼函式。
-     * @returns {this}
+     * 註冊 Minecraft 遊戲事件訂閱。
+     * 當指定的 Minecraft 遊戲事件發生時，會觸發提供的回呼函式。
+     * @param {string} eventName - 要訂閱的 Minecraft 事件名稱 (PascalCase)。建議使用 `MinecraftEvents` 列舉。
+     * @param {(body: object, header: object) => void} callback - 當事件觸發時要執行的回呼函式。
+     * @throws {Error} 如果連線未建立或已關閉，或 callback 不是函式。
      */
     eventSubscribe(eventName, callback) {
         if (!this.clientConn || this.clientConn.closed) {
-            this.#emitter.emit("log", `⚠️ 無法訂閱事件 "${eventName}"：連線已關閉`);
-            return this;
+            throw new Error(`無法訂閱事件 "${eventName}"：連線已關閉`);
+        }
+        if (typeof callback !== 'function') {
+            throw new Error(`訂閱事件 "${eventName}" 必須提供一個回呼函式。`);
         }
 
-        const payload = {
-            header: {
-                requestId: this.#generateId(8),
-                messagePurpose: "subscribe",
-                version: 17104896,
-            },
-            body: {
-                eventName,
-            },
-        };
-        this.clientConn.sendText(JSON.stringify(payload));
-        this.#emitter.emit("log", `🔔 已訂閱事件: ${eventName}`);
-
-        if (callback && typeof callback === 'function') {
-            const camelCaseEventName = eventName.charAt(0).toLowerCase() + eventName.slice(1);
-            this.on(camelCaseEventName, callback);
+        // 如果是第一次訂閱此事件，則向 Minecraft 發送訂閱請求
+        if (!this.#eventSubscriptionCallbacks.has(eventName) || this.#eventSubscriptionCallbacks.get(eventName).size === 0) {
+            const payload = {
+                header: {
+                    requestId: this.#generateId(8),
+                    messagePurpose: "subscribe",
+                    version: MC_PROTOCOL_VERSION,
+                },
+                body: {
+                    eventName,
+                },
+            };
+            this.clientConn.sendText(JSON.stringify(payload));
+            this.#_log(`🔔 已向 Minecraft 請求訂閱事件: ${eventName}`);
         }
-        return this;
+
+        // 將回呼函式儲存起來
+        let callbacks = this.#eventSubscriptionCallbacks.get(eventName);
+        if (!callbacks) {
+            callbacks = new Set();
+            this.#eventSubscriptionCallbacks.set(eventName, callbacks); // Ensure it's set if new
+        }
+        callbacks.add(callback);
+        this.#_log(`✅ 已註冊本地回呼函式用於事件: ${eventName}`);
+
+        // 懶得處理 unsubscribe
     }
 
     /**

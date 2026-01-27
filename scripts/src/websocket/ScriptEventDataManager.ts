@@ -5,7 +5,7 @@ import { system } from "@minecraft/server";
  *
  * 協定:
  * 1. 開始: scriptevent yb:<name> START:<total_chunks>:<transfer_id>
- * 2. 資料: scriptevent yb:<name> DATA:<chunk_index>:<transfer_id>:<base64_chunk>
+ * 2. 資料: scriptevent yb:<name> DATA:<chunk_index>:<transfer_id>:<chunk_data>
  * 3. 結束: scriptevent yb:<name> END:<transfer_id>
  */
 export class ScriptEventDataManager {
@@ -95,7 +95,7 @@ export class ScriptEventDataManager {
           startTime: system.currentTick,
         });
       } else if (type === "DATA") {
-        // DATA:<chunk_index>:<transfer_id>:<base64_chunk>
+        // DATA:<chunk_index>:<transfer_id>:<chunk_data>
         const chunkIndex = parseInt(parts[1], 10);
         const transferId = parts[2];
         const chunkData = parts.slice(3).join(":");
@@ -144,7 +144,7 @@ export class ScriptEventDataManager {
     system.clearRun(transfer.timeout);
     this.incomingTransfers.delete(transferId);
 
-    let b64String = "";
+    let reassembledString = "";
     for (let i = 0; i < transfer.totalChunks; i++) {
       const chunk = transfer.receivedChunks.get(i);
       if (chunk === undefined) {
@@ -153,17 +153,17 @@ export class ScriptEventDataManager {
         );
         return;
       }
-      b64String += chunk;
+      reassembledString += chunk;
     }
 
     try {
-      const byteString = this.decodeBase64(b64String);
-      const decodedString = decodeURIComponent(escape(byteString));
-      let finalData: string;
+      // 嘗試將重組後的字串解析為 JSON。
+      // 如果失敗，則將其視為普通字串。
+      let finalData: any;
       try {
-        finalData = JSON.parse(decodedString);
+        finalData = JSON.parse(reassembledString);
       } catch {
-        finalData = decodedString;
+        finalData = reassembledString;
       }
 
       const listener = this.listeners.get(transfer.name);
@@ -173,26 +173,8 @@ export class ScriptEventDataManager {
       }
     } catch (e) {
       console.error(
-        `[DataManager] 解碼或解析來自 '${transfer.name}' 的資料時失敗: ${e}`,
+        `[DataManager] 處理來自 '${transfer.name}' 的完整資料時失敗: ${e}`,
       );
     }
-  }
-
-  private decodeBase64(b64: string): string {
-    const chars =
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
-    let str = b64.replace(/=+$/, "");
-    let output = "";
-    if (str.length % 4 === 1) throw new Error("無效的 Base64 字串");
-    for (
-      let bc = 0, bs = 0, buffer, i = 0;
-      (buffer = str.charAt(i++));
-      ~buffer && ((bs = bc % 4 ? bs * 64 + buffer : buffer), bc++ % 4)
-        ? (output += String.fromCharCode(255 & (bs >> ((-2 * bc) & 6))))
-        : 0
-    ) {
-      buffer = chars.indexOf(buffer);
-    }
-    return output;
   }
 }
