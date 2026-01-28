@@ -14,7 +14,7 @@ npm install nodejs-websocket
 
 1. 在 `./websocket` 開啟終端機運行下面指令開啟 Websocket Server
 ```
-node ./js/index.js
+node index.js
 ```
 2. 到遊戲輸入你的 port 就能連上了（範例使用 5218）
 ```
@@ -26,7 +26,7 @@ node ./js/index.js
 
 大部分已無法使用，能用的就自己 console.log 看一下結構吧。
 ```js
-// ./websocket/js/index.js
+// ./websocket/index.js
 
 // 監聽玩家聊天訊息
 wsServer.onEvent(MinecraftEvents.PlayerMessage, (body) => {
@@ -39,7 +39,7 @@ wsServer.onEvent(MinecraftEvents.PlayerMessage, (body) => {
 只需要用 `sendData` 即可傳送物件到 Minecraft，資料量很大也沒問題，只是會有延遲。很在意延遲的話建議自己壓縮一下資料再傳送（例如用陣列取代物件）。
 
 ```js
-// ./websocket/js/index.js
+// ./websocket/index.js
 
 // 示範傳送大量資料
 const largeObject = {
