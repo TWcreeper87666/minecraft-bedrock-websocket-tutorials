@@ -1,5 +1,4 @@
 import { createServer } from "nodejs-websocket";
-import EventEmitter from "events";
 const WSS_MAXIMUM_BYTES = 661;
 const MC_PROTOCOL_VERSION = 26; // 支援新版 execute
 
@@ -49,16 +48,18 @@ export const MinecraftEvents = Object.freeze({
 export class MinecraftWebSocketServer {
     #connectionResolver = null;
     #eventSubscriptionCallbacks = new Map(); // Key: eventName (PascalCase), Value: Set<Function>
+    #dataPollingTemp = {}; // 用於防止重複處理相同的資料點
+    #dataCallback = null;
+    #wsServer = null;
+    #clientConn = null;
+    #commandBatches = new Map(); // K: batchId, V: { commandCount, results, resolve, reject, timeout }
+    #requestIdToBatchId = new Map(); // K: requestId, V: batchId
+    #requestTimeoutMs = 60_000;
 
-    constructor(port, showLog = false) {
+    constructor(port, { showLog = false, enableDataPolling = false } = {}) {
         this.port = port;
-        this.showLog = showLog; // 新增的日誌開關
-
-        this.wsServer = null;
-        this.clientConn = null;
-        this.commandBatches = new Map(); // K: batchId, V: { commandCount, results, resolve, reject, timeout }
-        this.requestIdToBatchId = new Map(); // K: requestId, V: batchId
-        this.requestTimeoutMs = 60_000;
+        this.showLog = showLog;
+        this.enableDataPolling = enableDataPolling;
     }
 
     /**
@@ -74,18 +75,18 @@ export class MinecraftWebSocketServer {
 
     start() {
         return new Promise((resolve, reject) => {
-            if (this.wsServer) {
+            if (this.#wsServer) {
                 return reject(new Error("伺服器已經在運行中。"));
             }
 
             this.#connectionResolver = { resolve, reject };
 
-            this.wsServer = createServer((conn) => this.#onOpen(conn)).listen(this.port, () => {
+            this.#wsServer = createServer((conn) => this.#onOpen(conn)).listen(this.port, () => {
                 this.#_log(`✅ WebSocket 伺服器已啟動於端口 ${this.port}`);
                 this.#_log(`等待連線中... (/wsserver localhost:${this.port})`);
             });
 
-            this.wsServer.on("error", (err) => {
+            this.#wsServer.on("error", (err) => {
                 this.#_log(`⚠️ 伺服器錯誤: ${err.message}`);
                 if (this.#connectionResolver) {
                     this.#connectionResolver.reject(err);
@@ -96,14 +97,14 @@ export class MinecraftWebSocketServer {
     }
 
     stop(reason = "已停止") {
-        if (this.wsServer) {
-            this.wsServer.close(() => this.#_log("🛑 WebSocket 伺服器已停止"));
-            this.wsServer = null;
+        if (this.#wsServer) {
+            this.#wsServer.close(() => this.#_log("🛑 WebSocket 伺服器已停止"));
+            this.#wsServer = null;
         }
 
-        if (this.clientConn) {
-            this.clientConn?.socket.destroy();
-            this.clientConn = null;
+        if (this.#clientConn) {
+            this.#clientConn?.socket.destroy();
+            this.#clientConn = null;
         }
 
         this.#_log(reason);
@@ -111,7 +112,7 @@ export class MinecraftWebSocketServer {
 
     #onOpen(conn) {
         this.#_log(`🔗 客戶端已連線: ${conn.socket.remoteAddress}`);
-        this.clientConn = conn;
+        this.#clientConn = conn;
 
         this.sendMessage("§l§b- WebSocket連接成功!");
 
@@ -123,6 +124,10 @@ export class MinecraftWebSocketServer {
             this.#connectionResolver.resolve();
             this.#connectionResolver = null;
         }
+
+        if (this.enableDataPolling) {
+            this.#dataPollingLoop();
+        }
     }
 
     #onText(conn, message) {
@@ -133,25 +138,23 @@ export class MinecraftWebSocketServer {
             const eventName = header.eventName;
 
             if (eventName) {
-                // 觸發透過 eventSubscribe 註冊的回呼函式
                 const callbacks = this.#eventSubscriptionCallbacks.get(eventName);
                 if (callbacks) {
                     callbacks.forEach(callback => callback(body, header));
                 }
-                // 不再透過 emitter 發送 Minecraft 遊戲事件
             } else if (header.messagePurpose === "commandResponse") {
                 const requestId = header.requestId;
                 const statusMessage = body.statusMessage || "success";
-                const batchId = this.requestIdToBatchId.get(requestId);
+                const batchId = this.#requestIdToBatchId.get(requestId);
 
-                if (batchId && this.commandBatches.has(batchId)) {
-                    this.requestIdToBatchId.delete(requestId);
-                    const batch = this.commandBatches.get(batchId);
+                if (batchId && this.#commandBatches.has(batchId)) {
+                    this.#requestIdToBatchId.delete(requestId);
+                    const batch = this.#commandBatches.get(batchId);
                     batch.results.push(statusMessage);
 
                     if (batch.results.length === batch.commandCount) {
                         clearTimeout(batch.timeout);
-                        this.commandBatches.delete(batchId);
+                        this.#commandBatches.delete(batchId);
                         batch.resolve(batch.results);
                     }
                 }
@@ -180,8 +183,8 @@ export class MinecraftWebSocketServer {
      * @param {string | object} data - 要傳送的資料。如果是物件，會被 JSON.stringify。
      * @returns {Promise<void>}
      */
-    async sendDataToMinecraft(name, data) {
-        if (!this.clientConn || this.clientConn.closed) {
+    async sendData(name, data) {
+        if (!this.#clientConn || this.#clientConn.closed) {
             throw new Error("連線尚未建立或已關閉，無法傳送資料");
         }
         if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
@@ -278,17 +281,12 @@ export class MinecraftWebSocketServer {
         // 3. END command
         commands.push(`${commandBase} END:${transferId}`);
 
-        // 依序傳送所有指令。`runCommand` 會等待回應，這自然地調節了傳送速率並確保指令按順序處理。
-        for (const command of commands) {
-            try {
-                await this.runCommand(command); // runCommand already logs
-            } catch (e) {
-                this.#_log(`❌ 傳送資料塊失敗 (ID: ${transferId}): ${e.message}. 傳送中止。`);
-                throw new Error(`資料傳送中止: ${e.message}`);
-            }
+        try {
+            await this.runCommands(commands);
+            this.#_log(`✅ [${transferId}] 已成功向 Minecraft [${name}] 傳送所有資料塊。`);
+        } catch (e) {
+            this.#_log(`❌ 傳送資料塊失敗 (ID: ${transferId}): ${e.message}. 傳送中止。`);
         }
-
-        this.#_log(`✅ [${transferId}] 已成功向 Minecraft [${name}] 傳送所有資料塊。`);
     }
 
     /**
@@ -298,7 +296,7 @@ export class MinecraftWebSocketServer {
      */
     runCommands(commands) {
         return new Promise((resolve, reject) => {
-            if (!this.clientConn || this.clientConn.closed) {
+            if (!this.#clientConn || this.#clientConn.closed) {
                 return reject("連線尚未建立或已關閉，無法執行指令");
             }
 
@@ -312,25 +310,87 @@ export class MinecraftWebSocketServer {
                 reject,
                 timeout: setTimeout(() => {
                     // 清理超時的批次
-                    requestIds.forEach((reqId) => this.requestIdToBatchId.delete(reqId));
-                    this.commandBatches.delete(batchId);
-                    reject(`指令批次執行超時 (${this.requestTimeoutMs}ms)`);
-                }, this.requestTimeoutMs),
+                    requestIds.forEach((reqId) => this.#requestIdToBatchId.delete(reqId));
+                    this.#commandBatches.delete(batchId);
+                    reject(`指令批次執行超時 (${this.#requestTimeoutMs}ms)`);
+                }, this.#requestTimeoutMs),
             };
-            this.commandBatches.set(batchId, batch);
+            this.#commandBatches.set(batchId, batch);
 
             commands.forEach((command, index) => {
                 const requestId = requestIds[index];
-                this.requestIdToBatchId.set(requestId, batchId);
+                this.#requestIdToBatchId.set(requestId, batchId);
                 this.#internalRunCommand(command, requestId);
             });
         });
     }
 
+    /**
+     * (內部使用) 處理來自 'scoreboard players list yb:data' 的回應。
+     * @param {string} message - 來自 commandResponse 的 statusMessage。
+     * @private
+     */
+    #handleDataPollingResponse(message) {
+        if (!message || message === '玩家 yb:data 沒有記錄分數') {
+            return;
+        }
+
+        // 範例回應: §a正為 yb:data 顯示 1 個追蹤的物件：
+        const response_regexp = /^§a正為 yb:data 顯示 \d+ 個追蹤的物件：/;
+        if (response_regexp.test(message)) {
+            // 範例配對: - myCommand data here：123 (myObjective_123)
+            const matchIterator = message.matchAll(/- (.*?)：(\d+) \((.*?)\)/g);
+            for (const match of matchIterator) {
+                const [_, value, score, name] = match;
+                if (this.#dataPollingTemp[name]) continue;
+
+                // 呼叫已註冊的 onData 回呼函式
+                if (this.#dataCallback) {
+                    try {
+                        // 將從正規表示式捕獲的字串分數轉換為數字
+                        this.#dataCallback({ value, score: parseInt(score, 10), name });
+                    } catch (e) {
+                        this.#_log(`[Data Polling] 執行 onData 回呼時發生錯誤: ${e.message}`);
+                    }
+                }
+
+                // 立即刪除記分板目標以防止重複讀取。
+                // 這是此資料傳輸方法的必要部分。
+                this.runCommand(`scoreboard objectives remove "${name}"`).catch(e => this.#_log(`[Data Polling] 無法移除記分板目標 ${name}: ${e.message}`));
+
+                this.#dataPollingTemp[name] = true;
+                setTimeout(() => {
+                    delete this.#dataPollingTemp[name];
+                }, 3000);
+            }
+        }
+    }
+
+    /**
+     * (內部使用) 開始一個循環，定期查詢 Minecraft 以獲取資料。
+     * @private
+     */
+    async #dataPollingLoop() {
+        this.#_log("✅ 資料輪詢已啟動。");
+        while (this.#clientConn && !this.#clientConn.closed) {
+            try {
+                // runCommand 會等待回應，如果超時或連線中斷會拋出錯誤
+                const statusMessage = await this.runCommand('scoreboard players list yb:data');
+                this.#handleDataPollingResponse(statusMessage);
+            } catch (error) {
+                this.#_log(`[Data Polling] 輪詢時發生錯誤: ${error.message}`);
+                // 如果是連線錯誤，迴圈將在下次檢查時終止
+            }
+            // 在下次輪詢前稍作等待，以避免過度消耗資源
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        this.#_log("🛑 資料輪詢已停止。");
+    }
+
     #onClose(conn, code, reason) {
-        if (!this.wsServer) return;
-        if (this.clientConn === conn) {
-            this.clientConn = null; // Clear clientConn only if it's the one that closed
+        if (!this.#wsServer) return;
+        if (this.#clientConn === conn) {
+            this.#clientConn = null; // Clear clientConn only if it's the one that closed
         }
         this.#_log(`🚫 客戶端已斷線: 程式碼 ${code}, 原因 ${reason}`);
     }
@@ -344,7 +404,7 @@ export class MinecraftWebSocketServer {
      * @param {string} message
      */
     sendMessage(message) {
-        if (!this.clientConn || this.clientConn.closed) return;
+        if (!this.#clientConn || this.#clientConn.closed) return;
 
         let remaining = message;
         while (remaining.length > 0) {
@@ -376,7 +436,7 @@ export class MinecraftWebSocketServer {
      * @private
      */
     #internalRunCommand(command, requestId = null) {
-        if (!this.clientConn || this.clientConn.closed) {
+        if (!this.#clientConn || this.#clientConn.closed) {
             this.#_log(`⚠️ 無法執行指令 "${command}"：連線已關閉`);
             return;
         }
@@ -401,8 +461,27 @@ export class MinecraftWebSocketServer {
         }
 
         // 為所有指令（無論是單個還是批次）統一記錄日誌，並顯示請求 ID (前5位)
-        this.#_log(`[${reqId.slice(0, 5)}] 執行中: ${command}`);
-        this.clientConn.sendText(payload);
+        // 過濾掉高頻的輪詢指令，避免洗版
+        if (command !== 'scoreboard players list yb:data') {
+            this.#_log(`[${reqId.slice(0, 5)}] 執行中: ${command}`);
+        }
+        this.#clientConn.sendText(payload);
+    }
+
+    /**
+     * 註冊一個回呼函式，用於處理透過資料輪詢收到的資料。
+     * 只有在建構子中將 `enableDataPolling` 設為 `true` 時，此功能才會運作。
+     * @param {({ value: string, score: number, name: string }) => void} callback - 當收到資料時要執行的回呼函式。
+     */
+    onData(callback) {
+        if (this.enableDataPolling === false) {
+            this.#_log('⚠️ 警告: 嘗試註冊 onData 回呼，但 enableDataPolling 未啟用。');
+        }
+        if (typeof callback !== 'function') {
+            throw new Error('onData 必須提供一個函式作為回呼。');
+        }
+        this.#dataCallback = callback;
+        this.#_log('✅ 已註冊資料輪詢回呼函式。');
     }
 
     /**
@@ -412,8 +491,8 @@ export class MinecraftWebSocketServer {
      * @param {(body: object, header: object) => void} callback - 當事件觸發時要執行的回呼函式。
      * @throws {Error} 如果連線未建立或已關閉，或 callback 不是函式。
      */
-    eventSubscribe(eventName, callback) {
-        if (!this.clientConn || this.clientConn.closed) {
+    onEvent(eventName, callback) {
+        if (!this.#clientConn || this.#clientConn.closed) {
             throw new Error(`無法訂閱事件 "${eventName}"：連線已關閉`);
         }
         if (typeof callback !== 'function') {
@@ -432,7 +511,7 @@ export class MinecraftWebSocketServer {
                     eventName,
                 },
             };
-            this.clientConn.sendText(JSON.stringify(payload));
+            this.#clientConn.sendText(JSON.stringify(payload));
             this.#_log(`🔔 已向 Minecraft 請求訂閱事件: ${eventName}`);
         }
 

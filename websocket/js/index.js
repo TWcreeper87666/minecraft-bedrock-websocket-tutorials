@@ -1,13 +1,24 @@
 import { MinecraftEvents, MinecraftWebSocketServer } from "./MinecraftWebSocketServer.js";
 
 async function main() {
-    const wsServer = new MinecraftWebSocketServer(5218, true)
+    // 啟用 showLog 來查看伺服器內部日誌
+    // 啟用 enableDataPolling 來啟動基於記分板的資料輪詢機制
+    const wsServer = new MinecraftWebSocketServer(5218, { showLog: true, enableDataPolling: true });
 
     await wsServer.start();
 
     // 監聽玩家聊天訊息
-    wsServer.eventSubscribe(MinecraftEvents.PlayerMessage, (body) => {
+    wsServer.onEvent(MinecraftEvents.PlayerMessage, (body) => {
         if (body.type === 'chat') console.log(`[Chat] <${body.sender}> ${body.message}`);
+    });
+
+    // 監聽從 Minecraft 透過輪詢機制傳來的資料
+    wsServer.onData(({ value, score, name }) => {
+        console.log(`[Data Polling] 從 Minecraft 收到資料:`);
+        console.log(`  - ID: ${name}`);
+        console.log(`  - DATA: ${value}`);
+        console.log(`  - SCORE: ${score}`);
+        // 在這裡，你可以根據 'value' 的內容執行自訂邏輯
     });
 
     const responses = await wsServer.runCommand('say Hello from Javascript!');
@@ -24,11 +35,11 @@ async function main() {
                 info: "這是一個巢狀物件"
             }
         };
-        await wsServer.sendDataToMinecraft('myLargeData', largeObject);
+        await wsServer.sendData('myLargeData', largeObject);
         console.log("✅ 大量資料已傳送至 'myLargeData' 通道。");
 
         const longString = "這是一段非常非常非常長的字串，需要被分塊才能成功傳送到 Minecraft。".repeat(20);
-        await wsServer.sendDataToMinecraft('anotherChannel', longString);
+        await wsServer.sendData('anotherChannel', longString);
         console.log("✅ 長字串已傳送至 'anotherChannel' 通道。");
     } catch (error) {
         console.error("傳送大量資料時發生錯誤:", error);

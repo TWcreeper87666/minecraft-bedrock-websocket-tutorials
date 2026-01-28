@@ -23,22 +23,11 @@ const colors = {
 
 async function main() {
     // 啟用日誌輸出，以便在 CLI 中看到伺服器內部訊息
-    const wsServer = new MinecraftWebSocketServer(5218, true);
+    const wsServer = new MinecraftWebSocketServer(5218, { showLog: true });
 
     try {
         await wsServer.start();
         console.log(`${colors.green}[Status] 伺服器已啟動並等待連線。${colors.reset}`);
-
-        // 訂閱 PlayerMessage 事件，以便在 CLI 中顯示玩家聊天訊息
-        wsServer.eventSubscribe(MinecraftEvents.PlayerMessage, (body) => {
-            // 當非同步訊息 (如聊天) 進來時，在不干擾使用者輸入的情況下印出
-            readline.cursorTo(process.stdout, 0);
-            readline.clearLine(process.stdout, 0);
-            console.log(`\n${colors.gray}[Chat] <${body.sender}> ${body.message}${colors.reset}`);
-            // 重新顯示提示符號和使用者已輸入的內容
-            rl.prompt(true);
-        });
-
     } catch (error) {
         console.error(`${colors.red}無法啟動伺服器: ${error.message}${colors.reset}`);
         process.exit(1);

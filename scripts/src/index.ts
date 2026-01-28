@@ -1,18 +1,52 @@
-import { system, world } from "@minecraft/server";
-import "./websocket/ScriptEventDataManager";
-import { ScriptEventDataManager } from "./websocket/ScriptEventDataManager";
+import {
+  CommandPermissionLevel,
+  CustomCommandParamType,
+  CustomCommandStatus,
+  Player,
+  system,
+  world,
+} from "@minecraft/server";
+// 建議將 ScriptEventDataManager.ts 檔名也改為 WebSocketBridge.ts
+import { WebSocketBridge } from "./websocket/WebSocketBridge";
 
 // --- 實例化與使用範例 ---
-const dataManager = new ScriptEventDataManager();
+const wsBridge = WebSocketBridge.getInstance();
 
-dataManager.onData("myLargeData", (data, delay) => {
+// --- 監聽從外部傳入的資料 ---
+wsBridge.onData("myLargeData", (data, delay) => {
   world.sendMessage(
-    `§a[WSS] 成功接收到資料！(延遲: ${delay} ticks) 內容:\n§f${JSON.stringify(data)}`,
+    `§a[WSS-IN] 成功接收到資料！(延遲: ${delay} ticks) 內容:\n§f${JSON.stringify(
+      data,
+    )}`,
   );
 });
 
-dataManager.onData("anotherChannel", (data, delay) => {
+wsBridge.onData("anotherChannel", (data, delay) => {
   world.sendMessage(
-    `§b[WSS] 來自 'anotherChannel' 的訊息 (延遲: ${delay} ticks)\n§f${data}`,
+    `§b[WSS-IN] 來自 'anotherChannel' 的訊息 (延遲: ${delay} ticks)\n§f${data}`,
+  );
+});
+
+// --- 從遊戲內傳送資料到外部，自定義指令範例 ---
+system.beforeEvents.startup.subscribe(({ customCommandRegistry }) => {
+  customCommandRegistry.registerCommand(
+    {
+      name: "yb:send",
+      description: "傳送資料給 wsServer",
+      permissionLevel: CommandPermissionLevel.GameDirectors,
+      mandatoryParameters: [
+        { name: "data", type: CustomCommandParamType.String },
+      ],
+      optionalParameters: [
+        { name: "score", type: CustomCommandParamType.Integer },
+      ],
+    },
+    (origin, data: string, score: number) => {
+      system.run(() => wsBridge.sendData(data, score));
+      return {
+        status: CustomCommandStatus.Success,
+        message: `§e[WSS-OUT] 已嘗試將資料傳送至外部: "${data}" 分數: ${score}`,
+      };
+    },
   );
 });
