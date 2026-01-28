@@ -1,4 +1,4 @@
-# Websocket 連線
+# Websocket 連線與交互
 
 讓你的 Minecraft Bedrock Edition 可以與外部環境互動。
 
@@ -113,7 +113,7 @@ system.beforeEvents.startup.subscribe(({ customCommandRegistry }) => {
 
 我只負責把接口做出來，要怎麼用就由你自己決定了，例如根據 score 來區分不同的資料或者直接在 data 用屬性區分。
 
-```
+```js
 // 監聽從 Minecraft 透過輪詢機制傳來的資料
 wsServer.onData(({ data, score, id }) => {
     console.log(`[Data Polling] 從 Minecraft 收到資料:`);
