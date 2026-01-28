@@ -23,7 +23,7 @@ const colors = {
 
 async function main() {
     // 啟用日誌輸出，以便在 CLI 中看到伺服器內部訊息
-    const wsServer = new MinecraftWebSocketServer(5218, { showLog: true });
+    const wsServer = new MinecraftWebSocketServer(5218, { showLog: false });
 
     try {
         await wsServer.start();

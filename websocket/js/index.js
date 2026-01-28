@@ -3,7 +3,7 @@ import { MinecraftEvents, MinecraftWebSocketServer } from "./MinecraftWebSocketS
 async function main() {
     // 啟用 showLog 來查看伺服器內部日誌
     // 啟用 enableDataPolling 來啟動基於記分板的資料輪詢機制
-    const wsServer = new MinecraftWebSocketServer(5218, { showLog: true, enableDataPolling: true });
+    const wsServer = new MinecraftWebSocketServer(5218, { showLog: false, enableDataPolling: true });
 
     await wsServer.start();
 
