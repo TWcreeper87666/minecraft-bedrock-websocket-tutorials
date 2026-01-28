@@ -2,7 +2,7 @@
 
 讓你的 Minecraft Bedrock Edition 可以與外部環境互動。
 
-接口都寫好了，也寫了範例的交互方法，建議先把 API 學好再來玩這個 [MCBE 腳本 API 教學](https://youtu.be/mBSe_FHtWWo?si=Sc1spwI0MBTzPAnJ)。
+使用 javascript，接口都寫好了，也有範例的交互方法，建議先把 API 學好再來玩這個 [MCBE 腳本 API 教學](https://youtu.be/mBSe_FHtWWo?si=Sc1spwI0MBTzPAnJ)。
 
 ## 開啟 Websocket Server
 
@@ -131,17 +131,6 @@ wsServer.onData(({ data, score, id }) => {
 - header 的 version 經測試，使用 26 就能執行新版 execute
 - 內部往外傳資料使用 scoreboard list 指令輪詢
 - 每個 tick 最多傳送 126 個指令，不然你會獲得 `提出的指令過多，請等候一個完成`
-
-## Python 版本（還沒用好，等js版穩定了再來搞）
-
-安裝套件（直接全域安裝了懶）
-```
-pip install websockets
-```
-運行
-```
-python ./py/main.py
-```
 
 ## TODO
 
