@@ -70,21 +70,11 @@ wsBridge.onData("myLargeData", (data, delay) => {
 
 ## 傳送資料到 Websocket Server（內部 -> 外部）
 
-使用 `sendData` 就行，也做了一個自定義指令的版本。因為是用輪詢計分板的方式實現，所以有 score 這個參數可以使用。
+使用 `sendData` 就行，因為是用輪詢計分板的方式實現，所以有 score 這個參數可以使用。
 ```ts
 // ./scripts/src/index.ts
 
-// --- 從遊戲內傳送資料到外部 ---
-system.run(() => {
-  const data = "早上好".repeat(100);
-  const score = 69;
-  wsBridge.sendData(data, score);
-  world.sendMessage(
-    `§e[WSS-OUT] 已嘗試將資料傳送至外部: "${data}" 分數: ${score}`,
-  );
-});
-
-// --- 自定義指令範例 ---
+// --- 從遊戲內傳送資料到外部，自定義指令範例 ---
 system.beforeEvents.startup.subscribe(({ customCommandRegistry }) => {
   customCommandRegistry.registerCommand(
     {
