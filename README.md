@@ -4,6 +4,9 @@
 
 使用 javascript，接口都寫好了，也有範例的交互方法，建議先把 API 學好再來玩這個 [MCBE 腳本 API 教學](https://youtu.be/mBSe_FHtWWo?si=Sc1spwI0MBTzPAnJ)。
 
+[![介紹影片](https://img.youtube.com/vi/bSNMS_0zMOQ/maxresdefault.jpg)](https://youtu.be/bSNMS_0zMOQ)
+
+
 ## 開啟 Websocket Server
 
 - 安裝套件（可以參考 [MCBE 腳本 API 教學](https://youtu.be/mBSe_FHtWWo?si=Sc1spwI0MBTzPAnJ) 安裝 Node.js）
