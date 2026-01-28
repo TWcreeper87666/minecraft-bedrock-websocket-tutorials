@@ -55,6 +55,10 @@ export class MinecraftWebSocketServer {
     #commandBatches = new Map(); // K: batchId, V: { commandCount, results, resolve, reject, timeout }
     #requestIdToBatchId = new Map(); // K: requestId, V: batchId
     #requestTimeoutMs = 60_000;
+    #commandQueue = [];
+    #isProcessingQueue = false;
+    #COMMAND_CHUNK_SIZE = 100; // Minecraft 的限制約為每 tick 126 個，這裡使用一個安全值
+    #COMMAND_CHUNK_DELAY_MS = 50; // 1 tick
 
     constructor(port, { showLog = false, enableDataPolling = false } = {}) {
         this.port = port;
@@ -158,8 +162,29 @@ export class MinecraftWebSocketServer {
                         batch.resolve(batch.results);
                     }
                 }
+            } else if (header.messagePurpose === "error") {
+                const requestId = header.requestId;
+                const statusMessage = body.statusMessage || "Unknown error";
+                const statusCode = body.statusCode;
+
+                this.#_log(`[Command Error] RequestID: ${requestId}, Status: ${statusCode}, Message: ${statusMessage}`);
+
+                const batchId = this.#requestIdToBatchId.get(requestId);
+                if (batchId && this.#commandBatches.has(batchId)) {
+                    const batch = this.#commandBatches.get(batchId);
+
+                    // 拒絕整個區塊的 Promise
+                    batch.reject(new Error(`指令執行失敗 (Code: ${statusCode}): ${statusMessage}`));
+
+                    // 清理
+                    clearTimeout(batch.timeout);
+                    // 移除與此失敗批次相關的所有請求 ID
+                    batch.requestIds.forEach(reqId => this.#requestIdToBatchId.delete(reqId));
+                    this.#commandBatches.delete(batchId);
+                }
             } else {
                 this.#_log(`[Unhandled Message] Purpose: ${header.messagePurpose}, Event: ${eventName}`);
+                this.#_log(`[Unhandled Message] ${message}`);
             }
         } catch (err) {
             this.#_log(`❌ 解析 JSON 時出錯: ${err.message}`);
@@ -290,16 +315,90 @@ export class MinecraftWebSocketServer {
     }
 
     /**
-     * 執行一批指令並等待所有結果
+     * 將一批指令加入佇列等待執行，並等待所有結果。
+     * 指令會被分批並以受控的速率傳送，以避免超過 Minecraft 的速率限制。
      * @param {string[]} commands
      * @returns {Promise<string[]>}
      */
     runCommands(commands) {
         return new Promise((resolve, reject) => {
             if (!this.#clientConn || this.#clientConn.closed) {
-                return reject("連線尚未建立或已關閉，無法執行指令");
+                return reject(new Error("連線尚未建立或已關閉，無法執行指令"));
             }
 
+            this.#commandQueue.push({ commands, resolve, reject });
+            this.#processQueue(); // 非同步觸發佇列處理
+        });
+    }
+
+    /**
+     * (內部使用) 處理並執行命令佇列中的請求。
+     * @private
+     */
+    async #processQueue() {
+        if (this.#isProcessingQueue || this.#commandQueue.length === 0) {
+            return;
+        }
+
+        this.#isProcessingQueue = true;
+        let hasLoggedQueueStart = false;
+        // We capture the length here because it will change inside the loop.
+        const initialQueueLength = this.#commandQueue.length;
+
+        while (this.#commandQueue.length > 0) {
+            const { commands, resolve, reject } = this.#commandQueue.shift();
+
+            const isPollingRequest = commands.length === 1 && commands[0] === 'scoreboard players list yb:data';
+
+            // Only log queue activity for non-polling requests.
+            if (!isPollingRequest && !hasLoggedQueueStart) {
+                this.#_log(`[Queue] 開始處理佇列，目前有 ${initialQueueLength} 個請求。`);
+                hasLoggedQueueStart = true;
+            }
+
+            try {
+                const allResults = [];
+                // 將請求的指令分割成更小的區塊
+                for (let i = 0; i < commands.length; i += this.#COMMAND_CHUNK_SIZE) {
+                    const chunk = commands.slice(i, i + this.#COMMAND_CHUNK_SIZE);
+
+                    // 在傳送下一個區塊之前等待
+                    if (i > 0) {
+                        await new Promise(r => setTimeout(r, this.#COMMAND_CHUNK_DELAY_MS));
+                    }
+
+                    if (!isPollingRequest) {
+                        this.#_log(`[Queue] 正在執行一個包含 ${chunk.length} 個指令的區塊。`);
+                    }
+                    const chunkResults = await this.#executeChunk(chunk);
+                    allResults.push(...chunkResults);
+                }
+                resolve(allResults);
+            } catch (error) {
+                this.#_log(`[Queue] 處理請求時發生錯誤: ${error.message}`);
+                reject(error);
+            }
+        }
+
+        this.#isProcessingQueue = false;
+        if (hasLoggedQueueStart) {
+            this.#_log(`[Queue] 佇列處理完畢。`);
+        }
+    }
+
+    /**
+     * (內部使用) 執行一個指令區塊並等待結果。
+     * @param {string[]} commands - 要執行的指令區塊 (chunk)。
+     * @returns {Promise<string[]>}
+     * @private
+     */
+    #executeChunk(commands) {
+        return new Promise((resolve, reject) => {
+            if (!this.#clientConn || this.#clientConn.closed) {
+                return reject(new Error("連線在執行指令區塊時中斷"));
+            }
+
+            const timeoutError = new Error(`指令區塊執行超時 (${this.#requestTimeoutMs}ms)`);
             const batchId = this.#generateId();
             const requestIds = commands.map(() => this.#generateId());
 
@@ -308,11 +407,12 @@ export class MinecraftWebSocketServer {
                 results: [],
                 resolve,
                 reject,
+                requestIds, // 儲存請求 ID 以便於清理
                 timeout: setTimeout(() => {
                     // 清理超時的批次
                     requestIds.forEach((reqId) => this.#requestIdToBatchId.delete(reqId));
                     this.#commandBatches.delete(batchId);
-                    reject(`指令批次執行超時 (${this.#requestTimeoutMs}ms)`);
+                    reject(timeoutError);
                 }, this.#requestTimeoutMs),
             };
             this.#commandBatches.set(batchId, batch);
@@ -348,7 +448,7 @@ export class MinecraftWebSocketServer {
                 if (this.#dataCallback) {
                     try {
                         // 將從正規表示式捕獲的字串分數轉換為數字
-                        this.#dataCallback({ value, score: parseInt(score, 10), name });
+                        this.#dataCallback({ data: JSON.parse(value), score: parseInt(score, 10), id: name });
                     } catch (e) {
                         this.#_log(`[Data Polling] 執行 onData 回呼時發生錯誤: ${e.message}`);
                     }
@@ -471,7 +571,7 @@ export class MinecraftWebSocketServer {
     /**
      * 註冊一個回呼函式，用於處理透過資料輪詢收到的資料。
      * 只有在建構子中將 `enableDataPolling` 設為 `true` 時，此功能才會運作。
-     * @param {({ value: string, score: number, name: string }) => void} callback - 當收到資料時要執行的回呼函式。
+     * @param {({ data: any, score: number, id: string }) => void} callback - 當收到資料時要執行的回呼函式。
      */
     onData(callback) {
         if (this.enableDataPolling === false) {

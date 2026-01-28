@@ -79,7 +79,10 @@ export class WebSocketBridge {
    * @param score 一個可選的分數，可用於排序或作為 ID。預設為 0。
    */
   public async sendData(data: string, score: number = 0): Promise<void> {
-    const obj = world.scoreboard.addObjective(this.generateId(3), data);
+    const obj = world.scoreboard.addObjective(
+      this.generateId(3),
+      JSON.stringify(data),
+    );
     obj.addScore("yb:data", score);
     await system.waitTicks(100);
     if (obj.isValid) {

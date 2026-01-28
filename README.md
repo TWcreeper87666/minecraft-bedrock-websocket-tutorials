@@ -1,38 +1,127 @@
 # Websocket 連線
 
-讓你的 Minecraft 可以接收外部資料。接口都寫好了，裡面有寫範例的外部傳送與內部接收方法，兩筆資料分別為 `myLargeData`、`anotherChannel`，可以參考一下外部傳送 `./websocket/py/main.py`、`./websocket/js/index.js` 與內部接收 `./scripts/src/index.ts` 的方式。（todo: example code here）
+讓你的 Minecraft Bedrock Edition 可以與外部環境互動。
 
+接口都寫好了，也寫了範例的交互方法，建議先把 API 學好再來玩這個 [MCBE 腳本 API 教學](https://youtu.be/mBSe_FHtWWo?si=Sc1spwI0MBTzPAnJ)。
 
-把 websocket 開起來後到遊戲輸入你的 port 就能連上了，記得要設定要打開【設定 > 一般 > 已啟用 Websockets】
+## 開啟 Websocket Server
+
+- 安裝套件（可以參考 [MCBE 腳本 API 教學](https://youtu.be/mBSe_FHtWWo?si=Sc1spwI0MBTzPAnJ) 安裝 Node.js）
+```
+npm install nodejs-websocket
+```
+- 設定記得打開【設定 > 一般 > 已啟用 Websockets】（無加密）
+
+1. 在 `./websocket` 開啟終端機運行下面指令開啟 Websocket Server
+```
+node ./js/index.js
+```
+2. 到遊戲輸入你的 port 就能連上了（範例使用 5218）
 ```
 /wsserver localhost:5218
 /connect localhost:5218 // 也行
 ```
 
-eventSubscribe 有很多都不能用，可以用的自己 console.log 一下看結構吧
+## 訂閱事件
 
-### 從 Minecraft 傳送資料到外部
+大部分已無法使用，能用的就自己 console.log 看一下結構吧。
+```js
+// ./websocket/js/index.js
 
-可以透過一直執行 `/scoreboard players list yb:data`，要傳送資料時使用 `/scoreboard objectives add data dummy` 並 `/scoreboard players set yb:data data 123`。
-
-
-接收到的訊息如果 `header.messagePurpose === "commandResponse"` 並且不是 `玩家 yb:data 沒有記錄分數` 然後又符合 `` /^§a正為 yb:data 顯示 \d+ 個追蹤的物件：/ `` 就可以 `message.matchAll(/- (.*?)：(\d+) \((.*?)\)/g);` 
-
-哪天想到再加進來🤣
-
-### 兩種語言
-
-寫了 js 跟 py 的版本，安裝 websocket 套件應該就能用了，開啟一個終端機到 `./websocket`
-
-#### javascript
-
-安裝套件（可以參考 [基岩版麥塊腳本 API 教學](https://youtu.be/mBSe_FHtWWo?si=Sc1spwI0MBTzPAnJ) 安裝 Node.js）
+// 監聽玩家聊天訊息
+wsServer.onEvent(MinecraftEvents.PlayerMessage, (body) => {
+    if (body.type === 'chat') console.log(`[Chat] <${body.sender}> ${body.message}`);
+});
 ```
-npm install nodejs-websocket
+
+## 傳送資料到 Minecraft（外部 -> 內部）
+
+只需要用 `sendData` 即可傳送物件到 Minecraft，資料量很大也沒問題，只是會有延遲。很在意延遲的話建議自己壓縮一下資料再傳送（例如用陣列取代物件）。
+
+```js
+// ./websocket/js/index.js
+
+// 示範傳送大量資料
+const largeObject = {
+    message: "這是一個從 Node.js 傳送的大物件!",
+    timestamp: Date.now(),
+    data: Array.from({ length: 100 }, (_, i) => `item_${i}`),
+    nested: {
+        info: "這是一個巢狀物件"
+    }
+};
+await wsServer.sendData('myLargeData', largeObject);
 ```
-運行
+
+## Minecraft API 接收資料
+
+使用 `onData` 接收，請確保 name 跟傳送端一樣。
+```ts
+// ./scripts/src/index.ts
+
+wsBridge.onData("myLargeData", (data, delay) => {
+  world.sendMessage(
+    `§a[WSS-IN] 成功接收到資料！(延遲: ${delay} ticks) 內容:\n§f${JSON.stringify(
+      data,
+    )}`,
+  );
+});
 ```
-node ./js/index.js
+
+## 傳送資料到 Websocket Server（內部 -> 外部）
+
+使用 `sendData` 就行，也做了一個自定義指令的版本，因為是用輪詢計分板的方式實現，所以有 score 這個參數可以使用。
+```ts
+// ./scripts/src/index.ts
+
+// --- 從遊戲內傳送資料到外部 ---
+system.run(() => {
+  const data = "早上好".repeat(100);
+  const score = 69;
+  wsBridge.sendData(data, score);
+  world.sendMessage(
+    `§e[WSS-OUT] 已嘗試將資料傳送至外部: "${data}" 分數: ${score}`,
+  );
+});
+
+// --- 自定義指令範例 ---
+system.beforeEvents.startup.subscribe(({ customCommandRegistry }) => {
+  customCommandRegistry.registerCommand(
+    {
+      name: "yb:send",
+      description: "傳送資料給 wsServer",
+      permissionLevel: CommandPermissionLevel.GameDirectors,
+      mandatoryParameters: [
+        { name: "data", type: CustomCommandParamType.String },
+      ],
+      optionalParameters: [
+        { name: "score", type: CustomCommandParamType.Integer },
+      ],
+    },
+    (origin, data: string, score: number) => {
+      system.run(() => wsBridge.sendData(data, score));
+      return {
+        status: CustomCommandStatus.Success,
+        message: `§e[WSS-OUT] 已嘗試將資料傳送至外部: "${data}" 分數: ${score}`,
+      };
+    },
+  );
+});
+```
+
+## Websocket Server 接收資料
+
+我只負責把接口做出來，要怎麼用就由你自己決定了，例如根據 score 來區分不同的資料或者直接在 data 用屬性區分。
+
+```
+// 監聽從 Minecraft 透過輪詢機制傳來的資料
+wsServer.onData(({ data, score, id }) => {
+    console.log(`[Data Polling] 從 Minecraft 收到資料:`);
+    console.log(`  - ID: ${id}`);
+    console.log(`  - DATA: ${data}`);
+    console.log(`  - SCORE: ${score}`);
+    // 在這裡，你可以根據 'data' 的內容執行自訂邏輯
+});
 ```
 
 ## 小知識
@@ -40,12 +129,10 @@ node ./js/index.js
 - 單次傳送過去的完整物件大小不能超過 `661 bytes`
 - 傳送時特殊字元要用 `\u` 格式跳脫，例如中文字或 `` ` ``（`\u0060`）
 - header 的 version 經測試，使用 26 就能執行新版 execute
+- 內部往外傳資料使用 scoreboard list 指令輪詢
+- 每個 tick 最多傳送 126 個指令，不然你會獲得 `提出的指令過多，請等候一個完成`
 
-
-
-
-
-### python（等js穩定了再來搞）
+## Python 版本（還沒用好，等js版穩定了再來搞）
 
 安裝套件（直接全域安裝了懶）
 ```
@@ -55,3 +142,7 @@ pip install websockets
 ```
 python ./py/main.py
 ```
+
+## TODO
+
+- 加密的 websocket （lazy）
