@@ -9,7 +9,7 @@
  */
 
 import readline from 'readline';
-import { MinecraftEvents, MinecraftWebSocketServer } from "./MinecraftWebSocketServer.js";
+import { MinecraftWebSocketServer } from "./MinecraftWebSocketServer.js";
 
 // ANSI escape codes for colors to make the output more readable
 const colors = {

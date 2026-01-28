@@ -1,5 +1,4 @@
 import { CommandPermissionLevel, CustomCommandParamType, CustomCommandStatus, system, world, } from "@minecraft/server";
-// 建議將 ScriptEventDataManager.ts 檔名也改為 WebSocketBridge.ts
 import { WebSocketBridge } from "./websocket/WebSocketBridge";
 // --- 實例化與使用範例 ---
 const wsBridge = WebSocketBridge.getInstance();
