@@ -14,6 +14,7 @@
 npm install nodejs-websocket
 ```
 - 設定記得打開【設定 > 一般 > 已啟用 Websockets】（無加密）
+- 記得裝這個行為包
 
 1. 在 `./websocket` 開啟終端機運行下面指令開啟 Websocket Server
 ```
@@ -107,6 +108,8 @@ system.beforeEvents.startup.subscribe(({ customCommandRegistry }) => {
 我只負責把接口做出來，要怎麼用就由你自己決定了，例如根據 score 來區分不同的資料或者直接在 data 用屬性區分。
 
 ```js
+// ./websocket/index.js
+
 // 監聽從 Minecraft 透過輪詢機制傳來的資料
 wsServer.onData(({ data, score, id }) => {
     console.log(`[Data Polling] 從 Minecraft 收到資料:`);
