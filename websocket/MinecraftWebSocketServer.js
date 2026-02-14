@@ -1,5 +1,5 @@
 import { createServer } from "nodejs-websocket";
-const WSS_MAXIMUM_BYTES = 661;
+const WSS_MAXIMUM_BYTES = 600; // 661
 const MC_PROTOCOL_VERSION = 26; // 支援新版 execute
 
 /**
